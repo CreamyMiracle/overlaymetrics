@@ -13,10 +13,10 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading.Tasks;
+using System.Timers;
 using System.Windows.Forms;
 using static System.Net.Mime.MediaTypeNames;
 using static System.Windows.Forms.VisualStyles.VisualStyleElement;
-
 namespace OverlayMetrics
 {
     public class Overlay : IDisposable
@@ -30,94 +30,155 @@ namespace OverlayMetrics
         private GameOverlay.Drawing.Font _fontSmall;
         private readonly GraphicsWindow _window;
 
-        private readonly Dictionary<string, PerformanceCounter> _cpuCounters = new Dictionary<string, PerformanceCounter>();
-        private readonly Dictionary<string, PerformanceCounter> _ramCounters = new Dictionary<string, PerformanceCounter>();
-        private readonly Dictionary<string, PerformanceCounter> _diskCounters = new Dictionary<string, PerformanceCounter>();
-        private readonly Dictionary<string, PerformanceCounter> _gpuCounters = new Dictionary<string, PerformanceCounter>();
-        private readonly int averagingCount = 30;
+        private TimeSpan counterRefreshSpan = TimeSpan.FromMilliseconds(5000);
 
-        private readonly Queue<float> cpuMetrics = new Queue<float>();
-        private readonly Queue<float> ramMetrics = new Queue<float>();
-        private readonly Queue<float> diskMetrics = new Queue<float>();
-        private readonly Queue<float> threadMetrics = new Queue<float>();
-        private readonly Queue<float> gpuMetrics = new Queue<float>();
+        private ConcurrentDictionary<string, PerformanceCounter> _cpuCounters = new ConcurrentDictionary<string, PerformanceCounter>();
+        private DateTime _cpuCountersUpdated = DateTime.MinValue;
+
+        private ConcurrentDictionary<string, PerformanceCounter> _ramCounters = new ConcurrentDictionary<string, PerformanceCounter>();
+        private DateTime _ramCountersUpdated = DateTime.MinValue;
+
+        private ConcurrentDictionary<string, PerformanceCounter> _diskCounters = new ConcurrentDictionary<string, PerformanceCounter>();
+        private DateTime _diskCountersUpdated = DateTime.MinValue;
+
+        private ConcurrentDictionary<string, PerformanceCounter> _gpuCounters = new ConcurrentDictionary<string, PerformanceCounter>();
+        private DateTime _gpuCountersUpdated = DateTime.MinValue;
+
+        private readonly int averagingCount = 15;
+
+        private ConcurrentDictionary<string, ConcurrentQueue<float>> _cpuMetrics = new ConcurrentDictionary<string, ConcurrentQueue<float>>();
+        private ConcurrentDictionary<string, ConcurrentQueue<float>> _ramMetrics = new ConcurrentDictionary<string, ConcurrentQueue<float>>();
+        private ConcurrentDictionary<string, ConcurrentQueue<float>> _diskMetrics = new ConcurrentDictionary<string, ConcurrentQueue<float>>();
+
+        private ConcurrentQueue<float> _gpuMetrics = new ConcurrentQueue<float>();
+
         private readonly double _availableMemory;
         private readonly float _opacity = 0.35f;
 
+        private readonly System.Timers.Timer updateTimer;
+
         public Overlay()
         {
-            _cpuCounters.Add("CPU", new PerformanceCounter("Processor", "% Processor Time", "_Total"));
-            _ramCounters.Add("RAM", new PerformanceCounter("Memory", "Available MBytes"));
+            updateTimer = new System.Timers.Timer(500);
+            // Hook up the Elapsed event for the timer. 
+            updateTimer.Elapsed += OnTimedEvent;
+            updateTimer.AutoReset = true;
+            updateTimer.Enabled = true;
 
-            var gpuCategory = new PerformanceCounterCategory("GPU Engine");
-            var gpuInstances = gpuCategory.GetInstanceNames();
-            foreach (string gpuInstance in gpuInstances)
-            {
-                if (gpuInstance.EndsWith("engtype_3D"))
-                {
-                    foreach (PerformanceCounter counter in gpuCategory.GetCounters(gpuInstance))
-                    {
-                        if (counter.CounterName == "Utilization Percentage")
-                        {
-                            _gpuCounters.Add(gpuInstance, counter);
-                        }
-                    }
-                }
-            }
-
-            var trimmedChars = new[] { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', ' ' };
-            var diskCategory = new PerformanceCounterCategory("PhysicalDisk");
-            var diskInstances = diskCategory.GetInstanceNames();
-            foreach (string diskIstance in diskInstances)
-            {
-                foreach (PerformanceCounter counter in diskCategory.GetCounters(diskIstance))
-                {
-                    if (counter.CounterName == "Current Disk Queue Length" && diskIstance != "_Total")
-                    {
-                        _diskCounters.Add(diskIstance.Trim(trimmedChars), counter);
-                    }
-                }
-            }
+            GetCPUCounters();
+            GetRAMCounters();
+            GetGPUCounters();
+            GetDiskCounters();
 
             var gcMemoryInfo = GC.GetGCMemoryInfo();
             var installedMemory = gcMemoryInfo.TotalAvailableMemoryBytes;
             // it will give the size of memory in MB
             _availableMemory = (double)installedMemory / 1048576.0;
-
             var gfx = new GameOverlay.Drawing.Graphics()
             {
-                MeasureFPS = true,
-                PerPrimitiveAntiAliasing = true,
+                MeasureFPS = false,
+                PerPrimitiveAntiAliasing = false,
+                VSync = false,
                 TextAntiAliasing = true
             };
 
             int totalWidth = Screen.AllScreens.ToList().Sum(screen => screen.Bounds.Width);
             int maxHeight = Screen.AllScreens.ToList().MaxBy(screen => screen.Bounds.Height).Bounds.Height;
-
             _window = new GraphicsWindow(0, 0, totalWidth, maxHeight, gfx)
             {
-                FPS = 40,
+                FPS = 30,
                 IsTopmost = true,
                 IsVisible = true
             };
-
             _window.DestroyGraphics += _window_DestroyGraphics;
             _window.DrawGraphics += _window_DrawGraphics;
             _window.SetupGraphics += _window_SetupGraphics;
         }
 
+        private void OnTimedEvent(Object source, ElapsedEventArgs e)
+        {
+            GetCPUCounters();
+            GetRAMCounters();
+            GetGPUCounters();
+            GetDiskCounters();
+        }
+
+        private void GetCPUCounters()
+        {
+            DateTime now = DateTime.UtcNow;
+            if (now - _cpuCountersUpdated < counterRefreshSpan)
+            {
+                return;
+            }
+            _cpuCountersUpdated = now;
+
+            _cpuCounters.Clear();
+
+            _cpuCounters.TryAdd("CPU", new PerformanceCounter("Processor", "% Processor Time", "_Total"));
+            _cpuCounters.ToList().ForEach(kv => _cpuMetrics.TryAdd(kv.Key, new ConcurrentQueue<float>()));
+        }
+        private void GetRAMCounters()
+        {
+            DateTime now = DateTime.UtcNow;
+            if (now - _ramCountersUpdated < counterRefreshSpan)
+            {
+                return;
+            }
+            _ramCountersUpdated = now;
+
+            _ramCounters.Clear();
+
+            _ramCounters.TryAdd("RAM", new PerformanceCounter("Memory", "Available MBytes"));
+            _ramCounters.ToList().ForEach(kv => _ramMetrics.TryAdd(kv.Key, new ConcurrentQueue<float>()));
+        }
+        private void GetGPUCounters()
+        {
+            DateTime now = DateTime.UtcNow;
+            if (now - _gpuCountersUpdated < counterRefreshSpan)
+            {
+                return;
+            }
+            _gpuCountersUpdated = now;
+
+            _gpuCounters.Clear();
+
+            var gpuCategory = new PerformanceCounterCategory("GPU Engine");
+            var gpuCounterNames = gpuCategory.GetInstanceNames();
+            _gpuCounters = gpuCounterNames.Where(counterName => counterName.EndsWith("engtype_3D"))
+                .SelectMany(gpuCategory.GetCounters)
+                .Where(counter => counter.CounterName.Equals("Utilization Percentage"))
+                .ToConcurrentDictionary(x => x.InstanceName, x => x);
+        }
+        private void GetDiskCounters()
+        {
+            DateTime now = DateTime.UtcNow;
+            if (now - _diskCountersUpdated < counterRefreshSpan)
+            {
+                return;
+            }
+            _diskCountersUpdated = now;
+
+            _diskCounters.Clear();
+
+            var trimmedChars = new[] { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', ' ' };
+            var diskCategory = new PerformanceCounterCategory("PhysicalDisk");
+            var diskCounterNames = diskCategory.GetInstanceNames();
+            _diskCounters = diskCounterNames.Where(counterName => counterName != "_Total")
+                .SelectMany(diskCategory.GetCounters)
+                .Where(counter => counter.CounterName.Equals("% Idle Time"))
+                .ToConcurrentDictionary(x => x.InstanceName.Trim(trimmedChars), x => x);
+            _diskCounters.ToList().ForEach(kv => _diskMetrics.TryAdd(kv.Key, new ConcurrentQueue<float>()));
+        }
+
         private void _window_SetupGraphics(object sender, SetupGraphicsEventArgs e)
         {
             var gfx = e.Graphics;
-
             _backgroundBrush = gfx.CreateSolidBrush(0, 0, 0, 0);
             _blackBrush = gfx.CreateSolidBrush(0, 0, 0, _opacity);
             _whiteBrush = gfx.CreateSolidBrush(255, 255, 255, _opacity);
-
             _greenBrush = gfx.CreateSolidBrush(0, 255, 0, _opacity);
             _yellowBrush = gfx.CreateSolidBrush(255, 255, 0, _opacity);
             _redBrush = gfx.CreateSolidBrush(255, 0, 0, _opacity);
-
             _fontSmall = gfx.CreateFont("Segoe UI", 10);
         }
 
@@ -136,24 +197,23 @@ namespace OverlayMetrics
         {
             Win32API.POINT p = new Win32API.POINT();
             bool success = Win32API.GetCursorPos(out p);
-
             GameOverlay.Drawing.SolidBrush textBrush = FontColorBasedOnBackground(GetPixelColor(p.X, p.Y));
-
             int width = 20;
             int height = 40;
             int space = 30;
             int currX = p.X;
             int currY = p.Y - 80;
-
             var gfx = e.Graphics;
+
             gfx.ClearScene(_backgroundBrush);
 
             foreach (var counter in _cpuCounters)
             {
                 float cpu = counter.Value.NextValue();
-                cpuMetrics.Enqueue(cpu);
-                if (cpuMetrics.Count >= averagingCount) { cpuMetrics.Dequeue(); }
-                float cpuAvg = cpuMetrics.DefaultIfEmpty(0).Average();
+                ConcurrentQueue<float> currQueue = _cpuMetrics[counter.Key];
+                currQueue.Enqueue(cpu);
+                if (currQueue.Count >= averagingCount) { currQueue.TryDequeue(out float _); }
+                float cpuAvg = currQueue.DefaultIfEmpty(0).Average();
                 GameOverlay.Drawing.SolidBrush cpuBrush = cpuAvg <= 50 ? _greenBrush : cpuAvg >= 85 ? _redBrush : _yellowBrush;
                 DrawMetric(gfx, new GameOverlay.Drawing.Rectangle(currX, currY, currX + width, currY + height), cpuBrush, textBrush, cpuAvg, counter.Key);
                 currX = currX + space;
@@ -162,9 +222,10 @@ namespace OverlayMetrics
             foreach (var counter in _ramCounters)
             {
                 float ram = counter.Value.NextValue();
-                ramMetrics.Enqueue(ram);
-                if (ramMetrics.Count >= averagingCount) { ramMetrics.Dequeue(); }
-                float ramAvg = ramMetrics.DefaultIfEmpty(0).Average();
+                ConcurrentQueue<float> currQueue = _ramMetrics[counter.Key];
+                currQueue.Enqueue(ram);
+                if (currQueue.Count >= averagingCount) { currQueue.TryDequeue(out float _); }
+                float ramAvg = currQueue.DefaultIfEmpty(0).Average();
                 double ramRatio = (_availableMemory - ramAvg) / _availableMemory;
                 GameOverlay.Drawing.SolidBrush ramBrush = ramRatio <= 0.5 ? _greenBrush : ramRatio >= 0.85 ? _redBrush : _yellowBrush;
                 DrawMetric(gfx, new GameOverlay.Drawing.Rectangle(currX, currY, currX + width, currY + height), ramBrush, textBrush, (float)ramRatio * 100, counter.Key);
@@ -173,9 +234,13 @@ namespace OverlayMetrics
 
             foreach (var counter in _diskCounters)
             {
-                float disk = counter.Value.NextValue();
-                GameOverlay.Drawing.SolidBrush diskBrush = disk <= 1 ? _greenBrush : disk >= 3 ? _redBrush : _yellowBrush;
-                DrawMetric(gfx, new GameOverlay.Drawing.Rectangle(currX, currY, currX + width, currY + height), diskBrush, textBrush, (disk / 3) * 100, counter.Key);
+                float disk = 100 - (int)counter.Value.NextValue();
+                ConcurrentQueue<float> currQueue = _diskMetrics[counter.Key];
+                currQueue.Enqueue(disk);
+                if (currQueue.Count >= averagingCount) { currQueue.TryDequeue(out float _); }
+                float diskAvg = currQueue.DefaultIfEmpty(0).Average();
+                GameOverlay.Drawing.SolidBrush diskBrush = diskAvg <= 50 ? _greenBrush : diskAvg >= 85 ? _redBrush : _yellowBrush;
+                DrawMetric(gfx, new GameOverlay.Drawing.Rectangle(currX, currY, currX + width, currY + height), diskBrush, textBrush, diskAvg, counter.Key);
                 currX = currX + space;
             }
 
@@ -188,16 +253,16 @@ namespace OverlayMetrics
                 }
                 catch (System.InvalidOperationException ex)
                 {
-                    _gpuCounters.Remove(counter.Key);
+                    GetGPUCounters();
                 }
             }
-            gpuMetrics.Enqueue(gpu);
-            if (gpuMetrics.Count >= averagingCount) { gpuMetrics.Dequeue(); }
-            float gpuAvg = gpuMetrics.DefaultIfEmpty(0).Average();
+
+            _gpuMetrics.Enqueue(gpu);
+            if (_gpuMetrics.Count >= averagingCount) { _gpuMetrics.TryDequeue(out float _); }
+            float gpuAvg = _gpuMetrics.DefaultIfEmpty(0).Average();
             GameOverlay.Drawing.SolidBrush gpuBrush = gpuAvg <= 50 ? _greenBrush : gpuAvg >= 85 ? _redBrush : _yellowBrush;
             DrawMetric(gfx, new GameOverlay.Drawing.Rectangle(currX, currY, currX + width, currY + height), gpuBrush, textBrush, gpuAvg, "GPU");
             currX = currX + space;
-
         }
 
         private GameOverlay.Drawing.SolidBrush FontColorBasedOnBackground(System.Drawing.Color bg)
@@ -219,8 +284,6 @@ namespace OverlayMetrics
             return color;
         }
 
-
-
         public void Run()
         {
             _window.Create();
@@ -233,6 +296,7 @@ namespace OverlayMetrics
         }
 
         #region IDisposable Support
+
         private bool disposedValue;
 
         protected virtual void Dispose(bool disposing)
@@ -240,7 +304,6 @@ namespace OverlayMetrics
             if (!disposedValue)
             {
                 _window.Dispose();
-
                 disposedValue = true;
             }
         }
