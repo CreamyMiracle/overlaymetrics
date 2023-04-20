@@ -1,4 +1,5 @@
-﻿using System.Collections.Concurrent;
+﻿using Microsoft.Extensions.Configuration;
+using System.Collections.Concurrent;
 using System.Drawing;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
@@ -14,11 +15,19 @@ namespace OverlayMetrics
         [STAThread]
         static void Main(string[] args)
         {
-            var handle = Win32API.GetConsoleWindow();
-            Win32API.ShowWindow(handle, SW_HIDE);
+            var builder = new ConfigurationBuilder();
+            builder.SetBasePath(Directory.GetCurrentDirectory()).AddJsonFile("appsettings.json", optional: false, reloadOnChange: true);
+
+            IConfiguration config = builder.Build();
+
+            if (bool.Parse(config["HideConsole"]))
+            {
+                var handle = Win32API.GetConsoleWindow();
+                Win32API.ShowWindow(handle, SW_HIDE);
+            }
 
             GameOverlay.TimerService.EnableHighPrecisionTimers();
-            using (var overlay = new Overlay())
+            using (var overlay = new Overlay(config))
             {
                 overlay.Run();
             }

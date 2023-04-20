@@ -38,3 +38,12 @@ D:\Dev\overlaymetrics\OverlayMetrics\OverlayMetrics\obj\Debug\net7.0\refint\Over
 D:\Dev\overlaymetrics\OverlayMetrics\OverlayMetrics\obj\Debug\net7.0\OverlayMetrics.pdb
 D:\Dev\overlaymetrics\OverlayMetrics\OverlayMetrics\obj\Debug\net7.0\OverlayMetrics.genruntimeconfig.cache
 D:\Dev\overlaymetrics\OverlayMetrics\OverlayMetrics\obj\Debug\net7.0\ref\OverlayMetrics.dll
+D:\Dev\overlaymetrics\OverlayMetrics\OverlayMetrics\bin\Debug\net7.0\appsettings.json
+D:\Dev\overlaymetrics\OverlayMetrics\OverlayMetrics\bin\Debug\net7.0\Microsoft.Extensions.Configuration.dll
+D:\Dev\overlaymetrics\OverlayMetrics\OverlayMetrics\bin\Debug\net7.0\Microsoft.Extensions.Configuration.Abstractions.dll
+D:\Dev\overlaymetrics\OverlayMetrics\OverlayMetrics\bin\Debug\net7.0\Microsoft.Extensions.Configuration.FileExtensions.dll
+D:\Dev\overlaymetrics\OverlayMetrics\OverlayMetrics\bin\Debug\net7.0\Microsoft.Extensions.Configuration.Json.dll
+D:\Dev\overlaymetrics\OverlayMetrics\OverlayMetrics\bin\Debug\net7.0\Microsoft.Extensions.FileProviders.Abstractions.dll
+D:\Dev\overlaymetrics\OverlayMetrics\OverlayMetrics\bin\Debug\net7.0\Microsoft.Extensions.FileProviders.Physical.dll
+D:\Dev\overlaymetrics\OverlayMetrics\OverlayMetrics\bin\Debug\net7.0\Microsoft.Extensions.FileSystemGlobbing.dll
+D:\Dev\overlaymetrics\OverlayMetrics\OverlayMetrics\bin\Debug\net7.0\Microsoft.Extensions.Primitives.dll
