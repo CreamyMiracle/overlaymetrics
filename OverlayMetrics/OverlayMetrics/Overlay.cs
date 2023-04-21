@@ -34,15 +34,19 @@ namespace OverlayMetrics
         private TimeSpan counterRefreshSpan = TimeSpan.FromMilliseconds(5000);
 
         private ConcurrentDictionary<string, PerformanceCounter> _cpuCounters = new ConcurrentDictionary<string, PerformanceCounter>();
+        private ConcurrentDictionary<string, float> _cpuAvgs = new ConcurrentDictionary<string, float>();
         private DateTime _cpuCountersUpdated = DateTime.MinValue;
 
         private ConcurrentDictionary<string, PerformanceCounter> _ramCounters = new ConcurrentDictionary<string, PerformanceCounter>();
+        private ConcurrentDictionary<string, float> _ramAvgs = new ConcurrentDictionary<string, float>();
         private DateTime _ramCountersUpdated = DateTime.MinValue;
 
         private ConcurrentDictionary<string, PerformanceCounter> _diskCounters = new ConcurrentDictionary<string, PerformanceCounter>();
+        private ConcurrentDictionary<string, float> _diskAvgs = new ConcurrentDictionary<string, float>();
         private DateTime _diskCountersUpdated = DateTime.MinValue;
 
         private ConcurrentDictionary<string, PerformanceCounter> _gpuCounters = new ConcurrentDictionary<string, PerformanceCounter>();
+        private ConcurrentDictionary<string, float> _gpuAvgs = new ConcurrentDictionary<string, float>();
         private DateTime _gpuCountersUpdated = DateTime.MinValue;
 
         private readonly int _averagingCount;
@@ -74,7 +78,7 @@ namespace OverlayMetrics
         public Overlay(IConfiguration config)
         {
             _config = config;
-            
+
             _averagingCount = int.Parse(_config["AverageOf"]);
             _fontColorThreshold = int.Parse(_config["FontColorThreshold"]);
             _opacity = float.Parse(_config["Opacity"]);
@@ -93,6 +97,11 @@ namespace OverlayMetrics
             updateCountersTimer.Elapsed += OnCounterTimedEvent;
             updateCountersTimer.AutoReset = true;
             updateCountersTimer.Enabled = true;
+
+            updateMetricsTimer = new System.Timers.Timer(int.Parse(_config["UpdateMetricsIntervalMillis"]));
+            updateMetricsTimer.Elapsed += OnMetricsTimedEvent;
+            updateMetricsTimer.AutoReset = true;
+            updateMetricsTimer.Enabled = true;
 
             GetCPUCounters();
             GetRAMCounters();
@@ -131,6 +140,62 @@ namespace OverlayMetrics
             GetRAMCounters();
             GetGPUCounters();
             GetDiskCounters();
+        }
+
+        private void OnMetricsTimedEvent(Object source, ElapsedEventArgs e)
+        {
+            //_cpuAvgs.Clear();
+            foreach (var counter in _cpuCounters)
+            {
+                float cpu = counter.Value.NextValue();
+                ConcurrentQueue<float> currQueue = _cpuMetrics[counter.Key];
+                currQueue.Enqueue(cpu);
+                if (currQueue.Count >= _averagingCount) { currQueue.TryDequeue(out float _); }
+                float cpuAvg = currQueue.DefaultIfEmpty(0).Average();
+                _cpuAvgs[counter.Key] = cpuAvg;
+            }
+
+            //_ramAvgs.Clear();
+            foreach (var counter in _ramCounters)
+            {
+                float ram = counter.Value.NextValue();
+                ConcurrentQueue<float> currQueue = _ramMetrics[counter.Key];
+                currQueue.Enqueue(ram);
+                if (currQueue.Count >= _averagingCount) { currQueue.TryDequeue(out float _); }
+                float ramAvg = currQueue.DefaultIfEmpty(0).Average();
+                double ramRatio = (_availableMemory - ramAvg) / _availableMemory;
+                _ramAvgs[counter.Key] = (float)ramRatio;
+            }
+
+            //_diskAvgs.Clear();
+            foreach (var counter in _diskCounters)
+            {
+                float disk = 100 - (int)counter.Value.NextValue();
+                ConcurrentQueue<float> currQueue = _diskMetrics[counter.Key];
+                currQueue.Enqueue(disk);
+                if (currQueue.Count >= _averagingCount) { currQueue.TryDequeue(out float _); }
+                float diskAvg = currQueue.DefaultIfEmpty(0).Average();
+                _diskAvgs[counter.Key] = diskAvg;
+            }
+
+            //_gpuAvgs.Clear();
+            float gpu = 0;
+            foreach (var counter in _gpuCounters)
+            {
+                try
+                {
+                    gpu += counter.Value.NextValue();
+                }
+                catch (System.InvalidOperationException ex)
+                {
+                    GetGPUCounters();
+                }
+            }
+
+            _gpuMetrics.Enqueue(gpu);
+            if (_gpuMetrics.Count >= _averagingCount) { _gpuMetrics.TryDequeue(out float _); }
+            float gpuAvg = _gpuMetrics.DefaultIfEmpty(0).Average();
+            _gpuAvgs["GPU"] = gpuAvg;
         }
 
         private void SetOverlaySize()
@@ -252,61 +317,36 @@ namespace OverlayMetrics
 
             gfx.ClearScene(_backgroundBrush);
 
-            foreach (var counter in _cpuCounters)
+            foreach (var cpu in _cpuAvgs)
             {
-                float cpu = counter.Value.NextValue();
-                ConcurrentQueue<float> currQueue = _cpuMetrics[counter.Key];
-                currQueue.Enqueue(cpu);
-                if (currQueue.Count >= _averagingCount) { currQueue.TryDequeue(out float _); }
-                float cpuAvg = currQueue.DefaultIfEmpty(0).Average();
+                float cpuAvg = cpu.Value;
                 GameOverlay.Drawing.SolidBrush cpuBrush = cpuAvg <= 50 ? _greenBrush : cpuAvg >= 85 ? _redBrush : _yellowBrush;
-                DrawMetric(gfx, new GameOverlay.Drawing.Rectangle(currX, currY, currX + _width, currY + _height), cpuBrush, textBrush, cpuAvg, counter.Key);
+                DrawMetric(gfx, new GameOverlay.Drawing.Rectangle(currX, currY, currX + _width, currY + _height), cpuBrush, textBrush, cpuAvg, cpu.Key);
                 currX = currX + _elementSpacing;
             }
 
-            foreach (var counter in _ramCounters)
+            foreach (var ram in _ramAvgs)
             {
-                float ram = counter.Value.NextValue();
-                ConcurrentQueue<float> currQueue = _ramMetrics[counter.Key];
-                currQueue.Enqueue(ram);
-                if (currQueue.Count >= _averagingCount) { currQueue.TryDequeue(out float _); }
-                float ramAvg = currQueue.DefaultIfEmpty(0).Average();
-                double ramRatio = (_availableMemory - ramAvg) / _availableMemory;
+                double ramRatio = ram.Value;
                 GameOverlay.Drawing.SolidBrush ramBrush = ramRatio <= 0.5 ? _greenBrush : ramRatio >= 0.85 ? _redBrush : _yellowBrush;
-                DrawMetric(gfx, new GameOverlay.Drawing.Rectangle(currX, currY, currX + _width, currY + _height), ramBrush, textBrush, (float)ramRatio * 100, counter.Key);
+                DrawMetric(gfx, new GameOverlay.Drawing.Rectangle(currX, currY, currX + _width, currY + _height), ramBrush, textBrush, (float)ramRatio * 100, ram.Key);
                 currX = currX + _elementSpacing;
             }
 
-            foreach (var counter in _diskCounters)
+            foreach (var disk in _diskAvgs)
             {
-                float disk = 100 - (int)counter.Value.NextValue();
-                ConcurrentQueue<float> currQueue = _diskMetrics[counter.Key];
-                currQueue.Enqueue(disk);
-                if (currQueue.Count >= _averagingCount) { currQueue.TryDequeue(out float _); }
-                float diskAvg = currQueue.DefaultIfEmpty(0).Average();
+                float diskAvg = disk.Value;
                 GameOverlay.Drawing.SolidBrush diskBrush = diskAvg <= 50 ? _greenBrush : diskAvg >= 85 ? _redBrush : _yellowBrush;
-                DrawMetric(gfx, new GameOverlay.Drawing.Rectangle(currX, currY, currX + _width, currY + _height), diskBrush, textBrush, diskAvg, counter.Key);
+                DrawMetric(gfx, new GameOverlay.Drawing.Rectangle(currX, currY, currX + _width, currY + _height), diskBrush, textBrush, diskAvg, disk.Key);
                 currX = currX + _elementSpacing;
             }
 
-            float gpu = 0;
-            foreach (var counter in _gpuCounters)
+            foreach (var gpu in _gpuAvgs)
             {
-                try
-                {
-                    gpu += counter.Value.NextValue();
-                }
-                catch (System.InvalidOperationException ex)
-                {
-                    GetGPUCounters();
-                }
+                float gpuAvg = gpu.Value;
+                GameOverlay.Drawing.SolidBrush gpuBrush = gpuAvg <= 50 ? _greenBrush : gpuAvg >= 85 ? _redBrush : _yellowBrush;
+                DrawMetric(gfx, new GameOverlay.Drawing.Rectangle(currX, currY, currX + _width, currY + _height), gpuBrush, textBrush, gpuAvg, gpu.Key);
             }
-
-            _gpuMetrics.Enqueue(gpu);
-            if (_gpuMetrics.Count >= _averagingCount) { _gpuMetrics.TryDequeue(out float _); }
-            float gpuAvg = _gpuMetrics.DefaultIfEmpty(0).Average();
-            GameOverlay.Drawing.SolidBrush gpuBrush = gpuAvg <= 50 ? _greenBrush : gpuAvg >= 85 ? _redBrush : _yellowBrush;
-            DrawMetric(gfx, new GameOverlay.Drawing.Rectangle(currX, currY, currX + _width, currY + _height), gpuBrush, textBrush, gpuAvg, "GPU");
         }
 
         private GameOverlay.Drawing.SolidBrush FontColorBasedOnBackground(System.Drawing.Color bg)
